@@ -1,0 +1,13 @@
+package com.banking.notification.entity;
+
+public enum NotificationType {
+    HIGH_VALUE_TRANSACTION,
+    ACCOUNT_STATUS_CHANGE,
+    ACCOUNT_CREATED,
+    ACCOUNT_FROZEN,
+    ACCOUNT_ACTIVATED,
+    TRANSACTION_ALERT,
+    DEPOSIT_ALERT,
+    WITHDRAWAL_ALERT,
+    TRANSFER_ALERT
+}
