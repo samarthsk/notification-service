@@ -13,7 +13,7 @@ public class RabbitMQConfig {
 
     // Queue names
     public static final String TRANSACTION_NOTIFICATION_QUEUE = "transaction.notification.queue";
-    public static final String ACCOUNT_STATUS_QUEUE = "account.status.queue";
+    public static final String ACCOUNT_UPDATE_QUEUE = "account.update.queue";
 
     // Exchange names
     public static final String TRANSACTION_EXCHANGE = "transaction.exchange";
@@ -21,7 +21,6 @@ public class RabbitMQConfig {
 
     // Routing keys
     public static final String TRANSACTION_ROUTING_KEY = "transaction.notification";
-    public static final String ACCOUNT_STATUS_ROUTING_KEY = "account.status.change";
 
     // Queues
     @Bean
@@ -30,8 +29,8 @@ public class RabbitMQConfig {
     }
 
     @Bean
-    public Queue accountStatusQueue() {
-        return new Queue(ACCOUNT_STATUS_QUEUE, true);
+    public Queue accountUpdateQueue() {
+        return new Queue(ACCOUNT_UPDATE_QUEUE, true);
     }
 
     // Exchanges
@@ -52,14 +51,6 @@ public class RabbitMQConfig {
                 .bind(transactionNotificationQueue())
                 .to(transactionExchange())
                 .with(TRANSACTION_ROUTING_KEY);
-    }
-
-    @Bean
-    public Binding accountStatusBinding() {
-        return BindingBuilder
-                .bind(accountStatusQueue())
-                .to(accountExchange())
-                .with(ACCOUNT_STATUS_ROUTING_KEY);
     }
 
     // Message converter for JSON

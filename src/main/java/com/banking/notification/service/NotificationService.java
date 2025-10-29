@@ -8,7 +8,7 @@ public interface NotificationService {
 
     NotificationResponse sendTransactionNotification(TransactionNotificationRequest request);
 
-    NotificationResponse sendAccountStatusNotification(AccountStatusChangeRequest request);
+    NotificationResponse sendAccountStatusNotification(AccountUpdateEvent account);
 
     List<Notification> getAllNotifications();
 
@@ -17,4 +17,6 @@ public interface NotificationService {
     Notification getNotificationById(Long id);
 
     void retryFailedNotifications();
+
+    void processAccountUpdateNotification(AccountUpdateEvent event);
 }

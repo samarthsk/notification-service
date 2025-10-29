@@ -8,12 +8,13 @@ import lombok.NoArgsConstructor;
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
-public class AccountStatusChangeRequest {
+public class AccountUpdateEvent {
     private Long accountId;
+    private Long customerId;
     private String accountNumber;
-    private AccountStatus oldStatus;
-    private AccountStatus newStatus;
-    private String customerName;
-    private String recipientEmail;
-    private String recipientPhone;
+    private String accountType;
+    private Double balance;
+    private String currency;
+    private AccountStatus status;
+    private String createdAt;
 }

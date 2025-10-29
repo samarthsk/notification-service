@@ -30,8 +30,8 @@ public class NotificationController {
     @PostMapping("/account-status")
     @Operation(summary = "Send account status notification", description = "Sends notification for account status changes")
     public ResponseEntity<NotificationResponse> sendAccountStatusNotification(
-            @RequestBody AccountStatusChangeRequest request) {
-        NotificationResponse response = notificationService.sendAccountStatusNotification(request);
+            @RequestBody AccountUpdateEvent account) {
+        NotificationResponse response = notificationService.sendAccountStatusNotification(account);
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 

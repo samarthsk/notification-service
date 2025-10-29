@@ -28,24 +28,77 @@ public class NotificationServiceImpl implements NotificationService {
     private final JavaMailSender mailSender;
     private final MetricsService metricsService;
     private final MeterRegistry meterRegistry;
+    private final CustomerServiceClient customerServiceClient;
 
     // High-value transaction threshold (₹50,000)
     private static final BigDecimal HIGH_VALUE_THRESHOLD = new BigDecimal("50000");
 
+    // -- For event-driven Account update notifications -- //
+    @Override
+    public void processAccountUpdateNotification(AccountUpdateEvent event) {
+        // Fetch customer details using customerId
+        CustomerServiceClient.CustomerDetails customer = customerServiceClient.fetchCustomerById(event.getCustomerId());
+        if (customer == null || customer.getEmail() == null) {
+            log.warn("Customer not found or email missing for customerId {}", event.getCustomerId());
+            return;
+        }
+        sendAccountStatusNotification(
+                event.getAccountId(),
+                event.getAccountNumber(),
+                event.getStatus(),
+                customer.getName(),
+                customer.getEmail(),
+                customer.getPhone()
+        );
+    }
+
+    // Used by event-driven or admin REST triggers
+    public NotificationResponse sendAccountStatusNotification(Long accountId, String accountNumber, AccountStatus status, String customerName, String email, String phone) {
+        Notification notification = new Notification();
+        notification.setRecipientEmail(maskEmail(email));
+        notification.setRecipientPhone(maskPhone(phone));
+        notification.setNotificationType(determineAccountNotificationType(status));
+        notification.setChannel(NotificationChannel.EMAIL);
+        notification.setReferenceId(accountId);
+
+        String subject = "Account Status Update - " + accountNumber;
+        String message = buildAccountStatusMessage(customerName, accountNumber, status);
+        notification.setSubject(subject);
+        notification.setMessage(message);
+        notification.setStatus(NotificationStatus.PENDING);
+        notification = notificationRepository.save(notification);
+
+        try {
+            sendEmail(email, subject, message);
+            metricsService.incrementNotificationsSent("account-status");
+            notification.setStatus(NotificationStatus.SENT);
+            notification.setSentAt(LocalDateTime.now());
+            log.info("Sent account status notification for account {}", accountNumber);
+        } catch (Exception e) {
+            log.error("Failed to send account status notification for account {}", accountNumber, e);
+            metricsService.incrementNotificationsFailed("account-status");
+            notification.setStatus(NotificationStatus.FAILED);
+            notification.setErrorMessage(e.getMessage());
+            notification.setFailedAt(LocalDateTime.now());
+        }
+        notification = notificationRepository.save(notification);
+        return new NotificationResponse(
+                notification.getId(),
+                notification.getStatus(),
+                "Account status notification processed"
+        );
+    }
+
+    // -- Transaction Notification (will need similar event-driven chaining for real decoupling!) -- //
     @Override
     @Transactional
     public NotificationResponse sendTransactionNotification(TransactionNotificationRequest request) {
         log.info("Processing transaction notification for transaction ID: {}", request.getTransactionId());
-
-        // Check if transaction is high-value
         boolean isHighValue = request.getAmount().compareTo(HIGH_VALUE_THRESHOLD) >= 0;
-
         if (!isHighValue) {
             log.info("Transaction amount {} is below threshold. Skipping notification.", request.getAmount());
             return new NotificationResponse(null, NotificationStatus.PENDING, "Below threshold, no notification sent");
         }
-
-        // Create notification entity
         Notification notification = new Notification();
         notification.setRecipientEmail(maskEmail(request.getRecipientEmail()));
         notification.setRecipientPhone(maskPhone(request.getRecipientPhone()));
@@ -55,15 +108,11 @@ public class NotificationServiceImpl implements NotificationService {
 
         String subject = "High-Value Transaction Alert - ₹" + request.getAmount();
         String message = buildTransactionMessage(request);
-
         notification.setSubject(subject);
         notification.setMessage(message);
         notification.setStatus(NotificationStatus.PENDING);
-
-        // Save to database first
         notification = notificationRepository.save(notification);
 
-        // Try to send email
         Timer.Sample sample = Timer.start(meterRegistry);
         try {
             sendEmail(request.getRecipientEmail(), subject, message);
@@ -79,10 +128,7 @@ public class NotificationServiceImpl implements NotificationService {
             notification.setErrorMessage(e.getMessage());
             notification.setFailedAt(LocalDateTime.now());
         }
-
-        // Update notification status
         notification = notificationRepository.save(notification);
-
         return new NotificationResponse(
                 notification.getId(),
                 notification.getStatus(),
@@ -91,51 +137,23 @@ public class NotificationServiceImpl implements NotificationService {
     }
 
     @Override
-    @Transactional
-    public NotificationResponse sendAccountStatusNotification(AccountStatusChangeRequest request) {
-        log.info("Processing account status change notification for account: {}", request.getAccountNumber());
-
-        // Create notification entity
-        Notification notification = new Notification();
-        notification.setRecipientEmail(maskEmail(request.getRecipientEmail()));
-        notification.setRecipientPhone(maskPhone(request.getRecipientPhone()));
-        notification.setNotificationType(determineAccountNotificationType(request.getNewStatus()));
-        notification.setChannel(NotificationChannel.EMAIL);
-        notification.setReferenceId(request.getAccountId());
-
-        String subject = "Account Status Update - " + request.getAccountNumber();
-        String message = buildAccountStatusMessage(request);
-
-        notification.setSubject(subject);
-        notification.setMessage(message);
-        notification.setStatus(NotificationStatus.PENDING);
-
-        // Save to database
-        notification = notificationRepository.save(notification);
-
-        // Try to send email
-        try {
-            sendEmail(request.getRecipientEmail(), subject, message);
-            notification.setStatus(NotificationStatus.SENT);
-            notification.setSentAt(LocalDateTime.now());
-            log.info("Successfully sent account status notification for account: {}", request.getAccountNumber());
-        } catch (Exception e) {
-            log.error("Failed to send account status notification: {}", request.getAccountNumber(), e);
-            notification.setStatus(NotificationStatus.FAILED);
-            notification.setErrorMessage(e.getMessage());
-            notification.setFailedAt(LocalDateTime.now());
+    public NotificationResponse sendAccountStatusNotification(AccountUpdateEvent account) {
+        // Fetch customer details just as in event flow
+        CustomerServiceClient.CustomerDetails customer = customerServiceClient.fetchCustomerById(account.getCustomerId());
+        if (customer == null || customer.getEmail() == null) {
+            return new NotificationResponse(null, NotificationStatus.FAILED, "Customer info not found");
         }
-
-        // Update notification status
-        notification = notificationRepository.save(notification);
-
-        return new NotificationResponse(
-                notification.getId(),
-                notification.getStatus(),
-                "Account status notification processed"
+        return sendAccountStatusNotification(
+                account.getAccountId(),
+                account.getAccountNumber(),
+                account.getStatus(),
+                customer.getName(),
+                customer.getEmail(),
+                customer.getPhone()
         );
     }
 
+    // Query and Retry
     @Override
     public List<Notification> getAllNotifications() {
         return notificationRepository.findAll();
@@ -156,9 +174,7 @@ public class NotificationServiceImpl implements NotificationService {
     @Transactional
     public void retryFailedNotifications() {
         List<Notification> failedNotifications = notificationRepository.findByStatus(NotificationStatus.FAILED);
-
         log.info("Retrying {} failed notifications", failedNotifications.size());
-
         for (Notification notification : failedNotifications) {
             try {
                 sendEmail(
@@ -175,7 +191,8 @@ public class NotificationServiceImpl implements NotificationService {
         }
     }
 
-    // Helper methods
+    // --- Helper Methods ---
+
     @Retryable(
             value = {MailException.class},
             maxAttempts = 3,
@@ -187,27 +204,21 @@ public class NotificationServiceImpl implements NotificationService {
         message.setSubject(subject);
         message.setText(body);
         message.setFrom("noreply@banking.com");
-
         mailSender.send(message);
     }
 
     private String buildTransactionMessage(TransactionNotificationRequest request) {
         DateTimeFormatter formatter = DateTimeFormatter.ofPattern("dd-MMM-yyyy HH:mm");
-
         return String.format("""
                 Dear %s,
-                
                 This is to inform you about a high-value transaction on your account.
-                
                 Transaction Details:
                 - Account Number: %s
                 - Amount: ₹%s
                 - Transaction Type: %s
                 - Transaction ID: %s
                 - Date & Time: %s
-                
                 If you did not authorize this transaction, please contact us immediately.
-                
                 Best Regards,
                 Banking Team
                 """,
@@ -220,26 +231,20 @@ public class NotificationServiceImpl implements NotificationService {
         );
     }
 
-    private String buildAccountStatusMessage(AccountStatusChangeRequest request) {
+    private String buildAccountStatusMessage(String customerName, String accountNumber, AccountStatus status) {
         return String.format("""
                 Dear %s,
-                
                 Your account status has been updated.
-                
                 Account Details:
                 - Account Number: %s
-                - Previous Status: %s
                 - New Status: %s
-                
                 If you have any questions, please contact our customer service.
-                
                 Best Regards,
                 Banking Team
                 """,
-                request.getCustomerName(),
-                maskAccountNumber(request.getAccountNumber()),
-                request.getOldStatus(),
-                request.getNewStatus()
+                customerName,
+                maskAccountNumber(accountNumber),
+                status
         );
     }
 
@@ -261,7 +266,7 @@ public class NotificationServiceImpl implements NotificationService {
     }
 
     private String unmaskEmail(String maskedEmail) {
-        // This is a placeholder - in production, you'd store unmasked email separately
+        // Placeholder: In production, store unmasked email separately
         return maskedEmail;
     }
 
@@ -279,5 +284,4 @@ public class NotificationServiceImpl implements NotificationService {
             default -> NotificationType.ACCOUNT_STATUS_CHANGE;
         };
     }
-
 }
